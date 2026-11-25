@@ -1,0 +1,2 @@
+Coloca aqui sismo_maule.geojson (evento USGS official20100227063411530_30, formato GeoJSON).
+Si no existe, main.py intenta descargarlo de USGS.
