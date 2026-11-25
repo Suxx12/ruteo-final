@@ -23,6 +23,26 @@ SELECT row_number() OVER () AS id, n.geom::geometry(LineString,4326) AS geom,
                                  WHEN 'camino' THEN 3 ELSE 4 END LIMIT 1),'desconocido') AS tipo
 FROM noded n;
 
-ALTER TABLE red_edges ADD source int, ADD target int, ADD length_m double precision;
-UPDATE red_edges SET length_m = ST_Length(geom::geography);
+ALTER TABLE red_edges
+  ADD source int,
+  ADD target int,
+  ADD length_m double precision,
+  ADD es_sintetico boolean DEFAULT false,
+  ADD prob_falla double precision DEFAULT 0;
+
+UPDATE red_edges
+SET length_m = ST_Length(geom::geography),
+    es_sintetico = (tipo <> 'fibra');
+
 SELECT pgr_createTopology('red_edges', 0.00001, 'geom', 'id');
+
+-- Verificacion de conectividad base (componentes conexas y vertices)
+SELECT count(*) AS total_vertices FROM red_edges_vertices_pgr;
+SELECT count(DISTINCT component) AS componentes_red_b
+FROM pgr_connectedComponents(
+  'SELECT id, source, target, 1.0 AS cost, 1.0 AS reverse_cost FROM red_edges'
+);
+SELECT count(DISTINCT component) AS componentes_red_a_fibra
+FROM pgr_connectedComponents(
+  'SELECT id, source, target, 1.0 AS cost, 1.0 AS reverse_cost FROM red_edges WHERE tipo = ''fibra'''
+);

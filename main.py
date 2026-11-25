@@ -28,7 +28,50 @@ URL_USGS = ("https://earthquake.usgs.gov/fdsnws/event/1/query"
             "?eventid=official20100227063411530_30&format=geojson")
 # orden de carga; el sismo se carga en Python entre 02 y 03
 PASOS_SQL_1 = ["sql/01_capas.sql", "sql/02_comunas.sql"]
-PASOS_SQL_2 = ["sql/03_red.sql", "sql/04_nodos_clave.sql", "main.sql"]
+PASOS_SQL_2 = ["sql/03_red.sql", "sql/04_nodos_clave.sql", "sql/05_probabilidades.sql"]
+
+
+def _reemplazar_dbname(dsn, nueva_db="postgres"):
+    import re
+    if "dbname=" in dsn:
+        return re.sub(r"dbname=\S+", f"dbname={nueva_db}", dsn)
+    return dsn + f" dbname={nueva_db}"
+
+
+def asegurar_bd(dsn, intentos=15):
+    """Espera a que PostgreSQL acepte conexiones y crea la BD si aun no existe."""
+    import psycopg2
+    from psycopg2 import sql as psql
+    ultimo_error = None
+    for i in range(intentos):
+        try:
+            con = psycopg2.connect(dsn)
+            con.close()
+            return
+        except psycopg2.OperationalError as e:
+            msg = str(e).lower()
+            if "does not exist" in msg or "no existe" in msg:
+                break
+            ultimo_error = e
+            if i == 0:
+                print("  -> Esperando a que PostgreSQL termine de iniciar ...", flush=True)
+            time.sleep(1)
+    else:
+        sys.exit(f"No se pudo conectar a la base de datos.\n"
+                 f"  Esta corriendo 'docker compose up -d'?  DSN: {dsn}\n  Detalle: {ultimo_error}")
+    import re
+    m = re.search(r"dbname=(\S+)", dsn)
+    dbname = m.group(1) if m else "resiliencia"
+    dsn_admin = _reemplazar_dbname(dsn, "postgres")
+    try:
+        con = psycopg2.connect(dsn_admin)
+        con.autocommit = True
+        with con.cursor() as cur:
+            cur.execute(psql.SQL("CREATE DATABASE {}").format(psql.Identifier(dbname)))
+        con.close()
+        print(f"  -> Base de datos '{dbname}' creada automaticamente.")
+    except Exception as e:
+        sys.exit(f"No se pudo crear la base de datos '{dbname}': {e}")
 
 
 def conectar(dsn):
@@ -75,13 +118,38 @@ def cargar_sismo(dsn):
     print(f"  -> sismo: {titulo} (prof. {prof} km) en ({lon}, {lat})")
 
 
+def imprimir_resumen_bd(dsn):
+    """Imprime verificacion de topologia, conectividad y enlaces mas/menos afectados."""
+    con = conectar(dsn)
+    with con, con.cursor() as cur:
+        cur.execute("SELECT count(*) FROM red_edges")
+        n_edges = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM red_edges_vertices_pgr")
+        n_verts = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM red_edges WHERE es_sintetico")
+        n_sint = cur.fetchone()[0]
+        print(f"  -> Topologia: {n_verts} vertices, {n_edges} aristas ({n_sint} sinteticas).")
+        cur.execute("""SELECT id, tipo, es_sintetico, round(length_m::numeric), round(prob_medio::numeric, 4)
+                       FROM red_edges ORDER BY prob_medio DESC LIMIT 5""")
+        print("  -> Top 5 enlaces mas vulnerables (escenario medio):")
+        for r in cur.fetchall():
+            print(f"     id={r[0]} tipo={r[1]} sintetico={r[2]} largo={r[3]}m p={r[4]}")
+        cur.execute("""SELECT id, tipo, es_sintetico, round(length_m::numeric), round(prob_medio::numeric, 6)
+                       FROM red_edges ORDER BY prob_medio ASC LIMIT 5""")
+        print("  -> Top 5 enlaces menos vulnerables (escenario medio):")
+        for r in cur.fetchall():
+            print(f"     id={r[0]} tipo={r[1]} sintetico={r[2]} largo={r[3]}m p={r[4]}")
+
+
 def cmd_cargar(a):
     print("Cargando la base de datos ...")
+    asegurar_bd(a.dsn)
     for p in PASOS_SQL_1:
         ejecutar_sql(a.dsn, p)
     cargar_sismo(a.dsn)
     for p in PASOS_SQL_2:
         ejecutar_sql(a.dsn, p)
+    imprimir_resumen_bd(a.dsn)
     print("Listo.")
 
 
@@ -113,6 +181,7 @@ def cmd_attr(a):
 
 
 def cmd_mapa(a, filas=None):
+    import webbrowser
     from mapa import exportar_datos, generar_mapa
     if filas is None:
         filas = calcular_tabla(a.dsn, a.n, a.seed)
@@ -120,7 +189,9 @@ def cmd_mapa(a, filas=None):
     ruta = os.path.join(RAIZ, "output", "mapa.html")
     os.makedirs(os.path.dirname(ruta), exist_ok=True)
     generar_mapa(datos, filas, ruta)
-    print(f"Mapa generado: {ruta}  (abrelo en el navegador; necesita internet para Leaflet y el mapa base)")
+    print(f"Mapa generado: {ruta}  (necesita internet para Leaflet y el mapa base)")
+    if not getattr(a, "no_open", False):
+        webbrowser.open(f"file://{os.path.abspath(ruta)}")
 
 
 def cmd_todo(a):
@@ -134,11 +205,12 @@ def main():
     ap.add_argument("--dsn", default=DSN_DEFECTO)
     ap.add_argument("--n", type=int, default=1000, help="simulaciones Monte Carlo (por defecto 1000)")
     ap.add_argument("--seed", type=int, default=42)
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    ap.add_argument("--no-open", action="store_true", help="no abrir mapa.html en el navegador")
+    sub = ap.add_subparsers(dest="cmd")
     for nombre, fn in (("cargar", cmd_cargar), ("attr", cmd_attr), ("mapa", cmd_mapa), ("todo", cmd_todo)):
         sub.add_parser(nombre).set_defaults(fn=fn)
     a = ap.parse_args()
-    a.fn(a)
+    (a.fn if hasattr(a, "fn") else cmd_todo)(a)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,8 @@ FROM (
     'type','Feature',
     'geometry', ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, 0.001), 5)::jsonb,
     'properties', jsonb_build_object(
-      'id', id, 'tipo', tipo, 'km', round((length_m/1000)::numeric, 1),
+      'id', id, 'tipo', tipo, 'sintetico', es_sintetico,
+      'km', round((length_m/1000)::numeric, 1),
       'p_bajo',  round(prob_bajo::numeric, 4),
       'p_medio', round(prob_medio::numeric, 4),
       'p_alto',  round(prob_alto::numeric, 4))) AS f
@@ -110,7 +111,8 @@ function estilo(f) {
 }
 function popup(f) {
   const p = f.properties;
-  return '<b>' + p.tipo + '</b> #' + p.id + '<br>' + p.km + ' km<br>' +
+  const tag = p.sintetico ? ' <i>(enlace sintetico)</i>' : ' <i>(fibra real)</i>';
+  return '<b>' + p.tipo + '</b> #' + p.id + tag + '<br>' + p.km + ' km<br>' +
     'P(falla): bajo ' + (100 * p.p_bajo).toFixed(1) + ' % | medio ' + (100 * p.p_medio).toFixed(1) +
     ' % | alto ' + (100 * p.p_alto).toFixed(1) + ' %';
 }
@@ -121,7 +123,7 @@ for (const tipo of ['fibra', 'poste', 'camino', 'ferry']) {
     filter: f => f.properties.tipo === tipo, style: estilo,
     onEachFeature: (f, l) => l.bindPopup(popup(f))
   });
-  overlays[{ fibra: 'Fibra', poste: 'Postacion electrica', camino: 'Caminos sin postacion', ferry: 'Ferry' }[tipo]] = capas[tipo];
+  overlays[{ fibra: 'Fibra optica (real)', poste: 'Postacion electrica [sintetico]', camino: 'Caminos sin postacion [sintetico]', ferry: 'Ferry [sintetico]' }[tipo]] = capas[tipo];
   if (tipo === 'fibra' || tipo === 'poste') capas[tipo].addTo(map);
 }
 function recolorear() { Object.values(capas).forEach(c => c.setStyle(estilo)); }
@@ -177,7 +179,7 @@ panel.onAdd = function () {
     BINS.map(b => '<i style="background:' + b[1] + '"></i>' + b[2]).join('<br>') + '</div>' +
     '<table><tr><th>Red / modelo</th><th>ATTR antes</th><th>ATTR despues</th><th>Cambio</th></tr>' + filas + '</table>' +
     '<div class="nota">Red A = solo fibra; red B = fibra + postes + caminos + ferry. ' +
-    'ATTR despues = promedio Monte Carlo. Parametros del modelo: supuestos (ver README).</div>';
+    'ATTR despues = promedio Monte Carlo. Modelo: Youngs et al. (1997) + ALA (2001) (ver README).</div>';
   L.DomEvent.disableClickPropagation(d);
   return d;
 };
